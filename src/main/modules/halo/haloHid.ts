@@ -7,7 +7,7 @@
  * - 权限要求: Windows管理员权限
  */
 
-import { buildTextPacket, buildLayoutPacket, buildUIModePacket, getWriteTestPacket, toHex, TextColor, TextLayout, UIMode } from './haloPacket'
+import { buildTextPacket, buildLayoutPacket, buildUIModePacket, getWriteTestPacket, toHex, TextLayout, UIMode } from './haloPacket'
 
 interface HidDeviceInfo {
   path: string
@@ -79,24 +79,30 @@ function displayWidth(s: string): number {
   let width = 0
   for (const ch of s) {
     const code = ch.codePointAt(0) ?? 0
-    if (
-      (code >= 0x1100 && code <= 0x115F) || // Hangul Jamo
-      (code >= 0x2E80 && code <= 0xA4CF) || // CJK Radicals Supplement .. Yi
-      (code >= 0xAC00 && code <= 0xD7A3) || // Hangul Syllables
-      (code >= 0xF900 && code <= 0xFAFF) || // CJK Compatibility Ideographs
-      (code >= 0xFE10 && code <= 0xFE19) || // Vertical Forms
-      (code >= 0xFE30 && code <= 0xFE6F) || // CJK Compatibility Forms
-      (code >= 0xFF01 && code <= 0xFF60) || // Fullwidth Forms
-      (code >= 0xFFE0 && code <= 0xFFE6) ||
-      (code >= 0x20000 && code <= 0x2FFFD) ||
-      (code >= 0x30000 && code <= 0x3FFFD)
-    ) {
+    if (isWideChar(code)) {
       width += 2
     } else {
       width += 1
     }
   }
   return width
+}
+
+function isWideChar(code: number): boolean {
+  return (
+    (code >= 0x1100 && code <= 0x115F) || // Hangul Jamo
+    (code >= 0x2E80 && code <= 0xA4CF) || // CJK Radicals Supplement .. Yi
+    (code >= 0xAC00 && code <= 0xD7A3) || // Hangul Syllables
+    (code >= 0xF900 && code <= 0xFAFF) || // CJK Compatibility Ideographs
+    (code >= 0xFE10 && code <= 0xFE19) || // Vertical Forms
+    (code >= 0xFE30 && code <= 0xFE6F) || // CJK Compatibility Forms
+    (code >= 0xFF01 && code <= 0xFF60) || // Fullwidth Forms
+    (code >= 0xFFE0 && code <= 0xFFE6) ||
+    (code >= 0x20000 && code <= 0x2FFFD) || // CJK Extension B/C/D/E/F
+    (code >= 0x30000 && code <= 0x3FFFD) || // CJK Extension G/H
+    (code >= 0x2600 && code <= 0x27BF) || // Miscellaneous Symbols, Dingbats (☀☁★☕✂)
+    (code >= 0x1F000 && code <= 0x1FFFF)   // Emoji (😀🎵🐱🚗🏠 etc.)
+  )
 }
 
 export class HaloHidCommunicator {
@@ -146,8 +152,11 @@ export class HaloHidCommunicator {
 
     for (const devInfo of candidates) {
       try {
+        console.log(`[HaloHID] Trying device: ${devInfo.productString} path=${devInfo.path.substring(0, 40)}...`)
         const dev = new hidApi.HID(devInfo.path)
-        const result = dev.write(Array.from(getWriteTestPacket()))
+        console.log(`[HaloHID] Device opened OK`)
+        const result = dev.write(getWriteTestPacket())
+        console.log(`[HaloHID] Write result: ${result}`)
         if (result < 0) {
           dev.close()
           continue
@@ -179,12 +188,12 @@ export class HaloHidCommunicator {
     }
   }
 
-  sendText(text: string, maxLength = 50, color: TextColor = TextColor.WHITE): boolean {
+  sendText(text: string, maxLength = 50): boolean {
     while (displayWidth(text) > maxLength && text) {
       text = text.slice(0, -1)
     }
 
-    const packet = buildTextPacket(text, maxLength, color)
+    const packet = buildTextPacket(text)
 
     if (this.simulated) {
       console.log(`[HaloHID] [sim] send: ${toHex(packet).substring(0, 32)}...`)
@@ -194,7 +203,7 @@ export class HaloHidCommunicator {
     if (!this.connected || !this.device) return false
 
     try {
-      const result = this.device.write(Array.from(packet))
+      const result = this.device.write(packet)
       if (result < 0) {
         console.log('[HaloHID] Write failed')
         return false
@@ -207,8 +216,8 @@ export class HaloHidCommunicator {
     }
   }
 
-  sendLyricLine(text: string, maxChars = 20, color?: TextColor): boolean {
-    return this.sendText(text.slice(0, maxChars), maxChars, color ?? TextColor.WHITE)
+  sendLyricLine(text: string, maxChars = 20): boolean {
+    return this.sendText(text.slice(0, maxChars), maxChars)
   }
 
   setLayout(layout: TextLayout): boolean {
@@ -216,7 +225,7 @@ export class HaloHidCommunicator {
     if (this.simulated) return true
     if (!this.connected || !this.device) return false
     try {
-      this.device.write(Array.from(packet))
+      this.device.write(packet)
       return true
     } catch {
       return false
@@ -228,7 +237,7 @@ export class HaloHidCommunicator {
     if (this.simulated) return true
     if (!this.connected || !this.device) return false
     try {
-      this.device.write(Array.from(packet))
+      this.device.write(packet)
       return true
     } catch {
       return false
@@ -243,17 +252,4 @@ export class HaloHidCommunicator {
     const info = `${songName} - ${artist}`
     return this.sendText(info)
   }
-}
-
-export function resolveColor(colorStr: string): TextColor {
-  const nameToColor: Record<string, TextColor> = {
-    white: TextColor.WHITE,
-    red: TextColor.RED,
-    green: TextColor.GREEN,
-    blue: TextColor.BLUE,
-    yellow: TextColor.YELLOW,
-    cyan: TextColor.CYAN,
-    magenta: TextColor.MAGENTA,
-  }
-  return nameToColor[colorStr.toLowerCase().trim()] ?? TextColor.WHITE
 }

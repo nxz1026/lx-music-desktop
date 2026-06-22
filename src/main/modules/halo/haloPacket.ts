@@ -1,33 +1,16 @@
 /**
- * HID协议包构建器 - 移植自 HaloLyricSync Python 实现
+ * HID协议包构建器
  *
- * 参考项目: HaloPixelToolBox (https://github.com/XFEstudio/HaloPixelToolBox)
+ * 参考: HaloPixelToolBox (https://github.com/XFEstudio/HaloPixelToolBox)
+ *       HaloLyricSync (Python)
  *
- * 协议说明:
- * - 设备: 花再 Halo PixelBar (HID设备)
- * - 包长度: 固定64字节
- * - 通信方式: USB HID Write (不加报告ID前缀)
- *
- * 1. 文本包 (命令类型 0x01)
- *    Magic(4) + Color(1) + TotalLen(2) + TextLen(1) + Text(N) + Checksum(1) + Pad
- *    Magic: 0x2E 0xAA 0xEC 0xE8
- *
- * 2. 布局包 (命令类型 0x01, 子命令 0x02)
- *    Magic(4): 0x2E 0xAA 0xEC 0xEF
- *
- * 3. UI模式包 (命令类型 0x02)
- *    Magic(4): 0x2E 0xAA 0xEC 0xEF
+ * 协议:
+ * - 设备: 花再 Halo PixelBar (HID, 64字节包)
+ * - 文本包: Magic(4) + 0x00(1) + TotalLen(2) + TextLen(1) + Text(N) + Checksum(1) + Pad
+ *   Magic: 0x2E 0xAA 0xEC 0xE8
+ * - 布局/UI包: Magic(4) + ... ; Magic: 0x2E 0xAA 0xEC 0xEF
+ * - 注意: byte 4 固定为 0x00 (参考实现无颜色字段，非零值导致固件崩溃)
  */
-
-export enum TextColor {
-  WHITE = 0,
-  RED = 1,
-  GREEN = 2,
-  BLUE = 3,
-  YELLOW = 4,
-  CYAN = 5,
-  MAGENTA = 6,
-}
 
 export enum TextLayout {
   LEFT = 'left',
@@ -52,15 +35,15 @@ export enum UIMode {
 
 const PACKET_LENGTH = 64
 
-const LAYOUT_HEADER = [0x2E, 0xAA, 0xEC, 0xEF, 0x00, 0x09, 0x01, 0xF0, 0xB4, 0xC8, 0x00, 0x02, 0x00]
+const LAYOUT_HEADER = [0x2E, 0xAA, 0xEC, 0xEF, 0x00, 0x09, 0x01, 0xF0, 0xB4, 0xC8, 0x00, 0x02]
 
 const LAYOUT_BYTES: Record<TextLayout, number[]> = {
-  [TextLayout.LEFT]: [0x00, 0xFF, 0xFC, 0x00],
-  [TextLayout.CENTER]: [0x01, 0xFF, 0xFD, 0x00],
-  [TextLayout.RIGHT]: [0x02, 0xFF, 0xFE, 0x00],
-  [TextLayout.STRETCH]: [0x03, 0xFF, 0xFF, 0x00],
-  [TextLayout.SCROLL_LEFT_TO_RIGHT]: [0x00, 0xFF, 0xFD, 0x00],
-  [TextLayout.SCROLL_RIGHT_TO_LEFT]: [0x01, 0xFF, 0xFE, 0x00],
+  [TextLayout.LEFT]: [0x00, 0x00, 0xFF, 0xFC, 0x00],
+  [TextLayout.CENTER]: [0x00, 0x01, 0xFF, 0xFD, 0x00],
+  [TextLayout.RIGHT]: [0x00, 0x02, 0xFF, 0xFE, 0x00],
+  [TextLayout.STRETCH]: [0x00, 0x03, 0xFF, 0xFF, 0x00],
+  [TextLayout.SCROLL_LEFT_TO_RIGHT]: [0x01, 0x00, 0xFF, 0xFD, 0x00],
+  [TextLayout.SCROLL_RIGHT_TO_LEFT]: [0x01, 0x01, 0xFF, 0xFE, 0x00],
 }
 
 const UI_MODE_BYTES: Record<UIMode, number[]> = {
@@ -95,25 +78,35 @@ function padPacket(data: number[]): Buffer {
   return buf
 }
 
-export function buildTextPacket(text: string, maxLength = 50, color: TextColor = TextColor.WHITE): Buffer {
-  if (text.length > maxLength) {
-    text = text.substring(0, maxLength)
-  }
+const MAX_TEXT_BYTES = 53
+
+export function buildTextPacket(text: string): Buffer {
   const textBytes = Buffer.from(text, 'utf-8')
-  const textLen = textBytes.length
-  const totalLen = 1 + textLen + 1 // textLen(1) + text(N) + checksum(1)
+  const truncated = textBytes.subarray(0, MAX_TEXT_BYTES)
+  const textBytesFinal = truncated.length === textBytes.length
+    ? truncated
+    : trimBrokenUtf8(truncated)
+  const textLen = textBytesFinal.length
+  const totalLen = 1 + textLen + 1
 
   const packet: number[] = []
-  packet.push(0x2E, 0xAA, 0xEC, 0xE8, color)
-  // total length (little-endian 2 bytes)
+  packet.push(0x2E, 0xAA, 0xEC, 0xE8, 0x00)
   packet.push(totalLen & 0xFF, (totalLen >> 8) & 0xFF)
   packet.push(textLen)
-  for (const b of textBytes) {
+  for (const b of textBytesFinal) {
     packet.push(b)
   }
-  packet.push(checksum(textBytes))
+  packet.push(checksum(textBytesFinal))
 
   return padPacket(packet)
+}
+
+function trimBrokenUtf8(buf: Buffer): Buffer {
+  let end = buf.length
+  while (end > 0 && (buf[end - 1] & 0xC0) === 0x80) {
+    end--
+  }
+  return buf.subarray(0, end)
 }
 
 export function buildLayoutPacket(layout: TextLayout): Buffer {
@@ -134,8 +127,4 @@ export function getWriteTestPacket(): Buffer {
 
 export function toHex(packet: Buffer): string {
   return packet.toString('hex')
-}
-
-export function fromHex(hexStr: string): Buffer {
-  return Buffer.from(hexStr, 'hex')
 }

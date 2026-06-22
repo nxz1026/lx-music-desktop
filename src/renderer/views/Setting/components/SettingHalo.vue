@@ -8,17 +8,6 @@ dd.gap-top
   div
     h3 {{ $t('setting__halo_display') }}
     .p
-      span.small {{ $t('setting__halo_color') }}
-      div
-        select(:value="appSetting['halo.color']" @change="onColorChange")
-          option(value="white") {{ $t('setting__halo_color_white') }}
-          option(value="red") {{ $t('setting__halo_color_red') }}
-          option(value="green") {{ $t('setting__halo_color_green') }}
-          option(value="blue") {{ $t('setting__halo_color_blue') }}
-          option(value="yellow") {{ $t('setting__halo_color_yellow') }}
-          option(value="cyan") {{ $t('setting__halo_color_cyan') }}
-          option(value="magenta") {{ $t('setting__halo_color_magenta') }}
-    .p
       span.small {{ $t('setting__halo_layout') }}
       div
         select(:value="appSetting['halo.layout']" @change="onLayoutChange")
@@ -46,9 +35,6 @@ import { appSetting, updateSetting } from '@renderer/store/setting'
 export default {
   name: 'SettingHalo',
   setup() {
-    const onColorChange = event => {
-      updateSetting({ 'halo.color': event.target.value })
-    }
     const onLayoutChange = event => {
       updateSetting({ 'halo.layout': event.target.value })
     }
@@ -59,7 +45,6 @@ export default {
     return {
       appSetting,
       updateSetting,
-      onColorChange,
       onLayoutChange,
       onMaxCharsChange,
     }

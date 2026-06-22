@@ -697,11 +697,6 @@ declare global {
       'halo.enable': boolean
 
       /**
-       * Halo歌词颜色
-       */
-      'halo.color': 'white' | 'red' | 'green' | 'blue' | 'yellow' | 'cyan' | 'magenta'
-
-      /**
        * Halo每行最大字符数
        */
       'halo.maxCharsPerLine': number

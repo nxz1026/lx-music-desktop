@@ -7,8 +7,8 @@
  * 通信协议: USB HID 64字节数据包
  */
 
-import { HaloHidCommunicator, resolveColor, getHasHid, findHaloDevices, listDevices } from './haloHid'
-import { TextColor, TextLayout, UIMode } from './haloPacket'
+import { HaloHidCommunicator, getHasHid, findHaloDevices, listDevices } from './haloHid'
+import { TextLayout, UIMode } from './haloPacket'
 
 const SYNC_INTERVAL_MS = 50
 const SONG_INFO_DURATION_MS = 3000
@@ -98,9 +98,10 @@ let canSyncLyric = false
 let songInfoStartTime = 0
 let deviceConnected = false
 let lastLyricTime = 0
-let currentColor: TextColor = TextColor.WHITE
+let currentLayout: TextLayout = TextLayout.CENTER
 let maxCharsPerLine = 20
 let showProgress = false
+let lastDisplayText = ''
 
 function stopSyncTimer(): void {
   if (syncTimer) {
@@ -116,8 +117,8 @@ function startSyncTimer(): void {
 
 function updateSettings(): void {
   const setting = global.lx.appSetting
-  if (setting['halo.color']) {
-    currentColor = resolveColor(setting['halo.color'])
+  if (setting['halo.layout']) {
+    currentLayout = setting['halo.layout'] as TextLayout
   }
   maxCharsPerLine = setting['halo.maxCharsPerLine'] ?? 20
   showProgress = setting['halo.showProgress'] ?? false
@@ -134,6 +135,11 @@ function onSettingChange(keys: string[]): void {
       } else {
         stopModule()
       }
+      return
+    }
+
+    if (keys.includes('halo.layout') && communicator?.isConnected()) {
+      communicator.setLayout(currentLayout)
     }
   }
 }
@@ -173,6 +179,7 @@ function syncTick(): void {
     if (global.lx.appSetting['halo.enable'] && status.name) {
       communicator.showSongInfo(status.name, status.singer)
     }
+    lastDisplayText = ''
     return
   }
 
@@ -195,6 +202,7 @@ function syncTick(): void {
       communicator.setUIMode(UIMode.CLOCK)
       lastLyricTime = Date.now()
     }
+    lastDisplayText = ''
     return
   }
 
@@ -208,7 +216,10 @@ function syncTick(): void {
     }
   }
 
-  communicator.sendLyricLine(displayText, maxCharsPerLine, currentColor)
+  if (displayText !== lastDisplayText) {
+    lastDisplayText = displayText
+    communicator.sendLyricLine(displayText, maxCharsPerLine)
+  }
 }
 
 function startModule(): void {
@@ -272,4 +283,4 @@ export default function registerHalo(): void {
   console.log('[Halo] Module registered')
 }
 
-export { startModule, stopModule, HaloHidCommunicator, resolveColor, findHaloDevices, listDevices }
+export { startModule, stopModule, HaloHidCommunicator, findHaloDevices, listDevices }
