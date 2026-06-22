@@ -1,0 +1,275 @@
+/**
+ * Halo 歌词同步模块入口
+ *
+ * 监听 LX Music 播放器状态，将歌词实时同步到 花再 Halo PixelBar 音箱。
+ *
+ * 数据来源: 直接读取 global.lx.player_status (零延迟)
+ * 通信协议: USB HID 64字节数据包
+ */
+
+import { HaloHidCommunicator, resolveColor, getHasHid, findHaloDevices, listDevices } from './haloHid'
+import { TextColor, TextLayout, UIMode } from './haloPacket'
+
+const SYNC_INTERVAL_MS = 50
+const SONG_INFO_DURATION_MS = 3000
+const IDLE_TIMEOUT_MS = 30000
+
+interface LyricLine {
+  timeMs: number
+  text: string
+  index: number
+}
+
+const TIME_RE = /\[(\d{1,2}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g
+const TAG_RE = /^\[([a-z]+):([^\]]*)\]$/i
+
+function parseLrc(lrcContent: string): LyricLine[] {
+  if (!lrcContent) return []
+  const lines: LyricLine[] = []
+  const rawLines = lrcContent.split(/\r?\n/)
+
+  for (const line of rawLines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    // Skip tag-only lines
+    if (TAG_RE.test(trimmed) && !/\[\d/.test(trimmed)) continue
+
+    const timeMatches: RegExpExecArray[] = []
+    let match: RegExpExecArray | null
+    TIME_RE.lastIndex = 0
+    while ((match = TIME_RE.exec(trimmed)) !== null) {
+      timeMatches.push(match)
+    }
+    if (!timeMatches.length) continue
+
+    const lastMatch = timeMatches[timeMatches.length - 1]
+    const text = trimmed.substring(lastMatch.index + lastMatch[0].length).trim()
+
+    for (const m of timeMatches) {
+      const minutes = parseInt(m[1], 10)
+      const seconds = parseInt(m[2], 10)
+      const csStr = m[3] ?? '00'
+      let centiseconds: number
+      if (csStr.length === 3) {
+        centiseconds = parseInt(csStr, 10)
+      } else {
+        centiseconds = parseInt(csStr.padEnd(3, '0').substring(0, 3), 10)
+      }
+      const timeMs = minutes * 60000 + seconds * 1000 + centiseconds
+
+      lines.push({ timeMs, text, index: lines.length })
+    }
+  }
+
+  lines.sort((a, b) => a.timeMs - b.timeMs)
+  for (let i = 0; i < lines.length; i++) {
+    lines[i].index = i
+  }
+  return lines
+}
+
+function getLyricAtTime(lines: LyricLine[], timeMs: number): string {
+  if (!lines.length) return ''
+  let left = 0
+  let right = lines.length - 1
+  let resultIdx = 0
+
+  while (left <= right) {
+    const mid = (left + right) >> 1
+    if (lines[mid].timeMs <= timeMs) {
+      resultIdx = mid
+      left = mid + 1
+    } else {
+      right = mid - 1
+    }
+  }
+
+  return lines[resultIdx]?.text ?? ''
+}
+
+let communicator: HaloHidCommunicator | null = null
+let syncTimer: ReturnType<typeof setInterval> | null = null
+
+// Sync state
+let lastSongKey = ''
+let parsedLrcLines: LyricLine[] = []
+let canSyncLyric = false
+let songInfoStartTime = 0
+let deviceConnected = false
+let lastLyricTime = 0
+let currentColor: TextColor = TextColor.WHITE
+let maxCharsPerLine = 20
+let showProgress = false
+
+function stopSyncTimer(): void {
+  if (syncTimer) {
+    clearInterval(syncTimer)
+    syncTimer = null
+  }
+}
+
+function startSyncTimer(): void {
+  stopSyncTimer()
+  syncTimer = setInterval(syncTick, SYNC_INTERVAL_MS)
+}
+
+function updateSettings(): void {
+  const setting = global.lx.appSetting
+  if (setting['halo.color']) {
+    currentColor = resolveColor(setting['halo.color'])
+  }
+  maxCharsPerLine = setting['halo.maxCharsPerLine'] ?? 20
+  showProgress = setting['halo.showProgress'] ?? false
+}
+
+function onSettingChange(keys: string[]): void {
+  if (keys.some(k => k.startsWith('halo.'))) {
+    updateSettings()
+
+    if (keys.includes('halo.enable')) {
+      const enable = global.lx.appSetting['halo.enable']
+      if (enable) {
+        startModule()
+      } else {
+        stopModule()
+      }
+    }
+  }
+}
+
+function ensureDevice(): boolean {
+  if (!deviceConnected) {
+    if (!communicator) return false
+    deviceConnected = communicator.connect()
+    if (deviceConnected) {
+      canSyncLyric = true
+      lastSongKey = ''
+      parsedLrcLines = []
+      const layout = global.lx.appSetting['halo.layout'] as TextLayout | undefined
+      communicator.setLayout(layout ?? TextLayout.CENTER)
+    }
+  }
+  return deviceConnected
+}
+
+function syncTick(): void {
+  if (!communicator || !canSyncLyric) return
+  if (!ensureDevice()) return
+
+  const status = global.lx.player_status
+
+  // Not playing - skip
+  if (status.status !== 'playing') return
+
+  const songKey = `${status.name}::${status.singer}`
+
+  // Song changed
+  if (songKey !== lastSongKey && songKey !== '::') {
+    lastSongKey = songKey
+    parsedLrcLines = parseLrc(status.lyric || '')
+    songInfoStartTime = Date.now()
+
+    if (global.lx.appSetting['halo.enable'] && status.name) {
+      communicator.showSongInfo(status.name, status.singer)
+    }
+    return
+  }
+
+  // Song info display duration
+  if (Date.now() - songInfoStartTime < SONG_INFO_DURATION_MS) {
+    return
+  }
+
+  // Get lyric text
+  let displayText = status.lyricLineText
+
+  // Fallback: binary search in LRC
+  if (!displayText && parsedLrcLines.length > 0) {
+    displayText = getLyricAtTime(parsedLrcLines, status.progress)
+  }
+
+  if (!displayText) {
+    // Idle: switch to clock after timeout
+    if (Date.now() - lastLyricTime > IDLE_TIMEOUT_MS) {
+      communicator.setUIMode(UIMode.CLOCK)
+      lastLyricTime = Date.now()
+    }
+    return
+  }
+
+  lastLyricTime = Date.now()
+
+  // Build display text with optional progress
+  if (showProgress && parsedLrcLines.length > 0) {
+    const currentIdx = parsedLrcLines.findIndex(l => l.text === displayText)
+    if (currentIdx >= 0) {
+      displayText = `${displayText} [${currentIdx + 1}/${parsedLrcLines.length}]`
+    }
+  }
+
+  communicator.sendLyricLine(displayText, maxCharsPerLine, currentColor)
+}
+
+function startModule(): void {
+  updateSettings()
+
+  if (!communicator) {
+    communicator = new HaloHidCommunicator()
+  }
+
+  const hasApi = getHasHid()
+  console.log(`[Halo] Module starting, HID available: ${hasApi}`)
+  if (hasApi) {
+    const devices = findHaloDevices()
+    console.log(`[Halo] Found ${devices.length} HALO device(s)`)
+  }
+
+  deviceConnected = communicator.connect()
+  if (deviceConnected) {
+    canSyncLyric = true
+    lastSongKey = ''
+    parsedLrcLines = []
+  }
+
+  startSyncTimer()
+}
+
+function stopModule(): void {
+  stopSyncTimer()
+  canSyncLyric = false
+  deviceConnected = false
+
+  if (communicator?.isConnected()) {
+    communicator.setUIMode(UIMode.CLOCK)
+    communicator.disconnect()
+  }
+
+  lastSongKey = ''
+  parsedLrcLines = []
+}
+
+function onPlayerStatus(_status: Partial<LX.Player.Status>): void {
+  // Status updates come from the renderer via IPC
+  // The global.lx.player_status is already updated before this event fires
+  // We use syncTick to read the current state
+}
+
+let isModuleRegistered = false
+
+export default function registerHalo(): void {
+  if (isModuleRegistered) return
+  isModuleRegistered = true
+
+  global.lx.event_app.on('updated_config', onSettingChange)
+  global.lx.event_app.on('player_status', onPlayerStatus)
+
+  // Check if halo is enabled on startup
+  if (global.lx.appSetting['halo.enable']) {
+    startModule()
+  }
+
+  console.log('[Halo] Module registered')
+}
+
+export { startModule, stopModule, HaloHidCommunicator, resolveColor, findHaloDevices, listDevices }
