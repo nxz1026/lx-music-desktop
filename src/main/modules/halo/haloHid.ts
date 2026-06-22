@@ -7,6 +7,7 @@
  * - 权限要求: Windows管理员权限
  */
 
+import log from 'electron-log/node'
 import { buildTextPacket, buildLayoutPacket, buildUIModePacket, getWriteTestPacket, toHex, TextLayout, UIMode } from './haloPacket'
 
 interface HidDeviceInfo {
@@ -28,7 +29,7 @@ try {
   hidApi = require('node-hid')
   hasHid = true
 } catch {
-  console.log('[HaloHID] node-hid not available, running in simulated mode')
+  log.info('[HaloHID] node-hid not available, running in simulated mode')
 }
 
 function normalizePath(path: any): string {
@@ -114,7 +115,7 @@ export class HaloHidCommunicator {
   constructor() {
     if (!hasHid) {
       this.simulated = true
-      console.log('[HaloHID] Running in simulated mode')
+      log.info('[HaloHID] Running in simulated mode')
     }
   }
 
@@ -128,7 +129,7 @@ export class HaloHidCommunicator {
     if (this.simulated) {
       this.device = 'simulated'
       this.connected = true
-      console.log('[HaloHID] Simulated connect')
+      log.info('[HaloHID] Simulated connect')
       return true
     }
 
@@ -139,24 +140,24 @@ export class HaloHidCommunicator {
       const devs = listDevices().filter(d => d.path === path)
       candidates = devs
       if (!candidates.length) {
-        console.log(`[HaloHID] Device not found at path: ${path}`)
+        log.info(`[HaloHID] Device not found at path: ${path}`)
         return false
       }
     } else {
       candidates = findHaloDevices()
       if (!candidates.length) {
-        console.log('[HaloHID] No HALO device found')
+        log.info('[HaloHID] No HALO device found')
         return false
       }
     }
 
     for (const devInfo of candidates) {
       try {
-        console.log(`[HaloHID] Trying device: ${devInfo.productString} path=${devInfo.path.substring(0, 40)}...`)
+        log.info(`[HaloHID] Trying device: ${devInfo.productString} path=${devInfo.path.substring(0, 40)}...`)
         const dev = new hidApi.HID(devInfo.path)
-        console.log(`[HaloHID] Device opened OK`)
+        log.info(`[HaloHID] Device opened OK`)
         const result = dev.write(getWriteTestPacket())
-        console.log(`[HaloHID] Write result: ${result}`)
+        log.info(`[HaloHID] Write result: ${result}`)
         if (result < 0) {
           dev.close()
           continue
@@ -164,14 +165,14 @@ export class HaloHidCommunicator {
         this.device = dev
         this.deviceInfo = devInfo
         this.connected = true
-        console.log(`[HaloHID] Connected to: ${devInfo.productString}`)
+        log.info(`[HaloHID] Connected to: ${devInfo.productString}`)
         return true
       } catch (e: any) {
-        console.log(`[HaloHID] Connection attempt failed: ${e.message}`)
+        log.info(`[HaloHID] Connection attempt failed: ${e.message}`)
       }
     }
 
-    console.log('[HaloHID] Connection failed for all candidates')
+    log.info('[HaloHID] Connection failed for all candidates')
     return false
   }
 
@@ -182,7 +183,7 @@ export class HaloHidCommunicator {
       } catch { /* ignore */ }
       this.device = null
       this.connected = false
-      console.log('[HaloHID] Disconnected')
+      log.info('[HaloHID] Disconnected')
     } else {
       this.connected = false
     }
@@ -196,7 +197,7 @@ export class HaloHidCommunicator {
     const packet = buildTextPacket(text)
 
     if (this.simulated) {
-      console.log(`[HaloHID] [sim] send: ${toHex(packet).substring(0, 32)}...`)
+      log.info(`[HaloHID] [sim] send: ${toHex(packet).substring(0, 32)}...`)
       return true
     }
 
@@ -205,12 +206,12 @@ export class HaloHidCommunicator {
     try {
       const result = this.device.write(packet)
       if (result < 0) {
-        console.log('[HaloHID] Write failed')
+        log.info('[HaloHID] Write failed')
         return false
       }
       return true
     } catch (e: any) {
-      console.log(`[HaloHID] Write error: ${e.message}`)
+      log.info(`[HaloHID] Write error: ${e.message}`)
       this.connected = false
       return false
     }

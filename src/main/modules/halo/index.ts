@@ -8,6 +8,7 @@
  */
 
 import * as net from 'net'
+import log from 'electron-log/node'
 import { HaloHidCommunicator, getHasHid, findHaloDevices, listDevices } from './haloHid'
 import { TextLayout, UIMode } from './haloPacket'
 
@@ -107,13 +108,13 @@ async function waitForOpenAPI(): Promise<boolean> {
   let delay = 500
   while (Date.now() - start < PORT_WAIT_TIMEOUT_MS) {
     if (await checkPort(OPENAPI_PORT)) {
-      console.log(`[Halo] OpenAPI ready (port ${OPENAPI_PORT})`)
+      log.info(`[Halo] OpenAPI ready (port ${OPENAPI_PORT})`)
       return true
     }
     await new Promise(r => setTimeout(r, delay))
     delay = Math.min(delay * 2, 5000)
   }
-  console.warn(`[Halo] OpenAPI port ${OPENAPI_PORT} not ready after ${PORT_WAIT_TIMEOUT_MS}ms, continuing without check`)
+  log.warn(`[Halo] OpenAPI port ${OPENAPI_PORT} not ready after ${PORT_WAIT_TIMEOUT_MS}ms, continuing without check`)
   return false
 }
 
@@ -201,9 +202,9 @@ function syncTick(): void {
     checkPort(OPENAPI_PORT).then(ready => {
       if (!ready) {
         heartbeatFailures++
-        console.warn(`[Halo] Heartbeat fail (${heartbeatFailures}/${MAX_HEARTBEAT_FAILURES})`)
+        log.warn(`[Halo] Heartbeat fail (${heartbeatFailures}/${MAX_HEARTBEAT_FAILURES})`)
         if (heartbeatFailures >= MAX_HEARTBEAT_FAILURES) {
-          console.warn(`[Halo] OpenAPI ${OPENAPI_PORT} unreachable, stopping sync`)
+          log.warn(`[Halo] OpenAPI ${OPENAPI_PORT} unreachable, stopping sync`)
           canSyncLyric = false
         }
       } else {
@@ -279,13 +280,13 @@ function startModule(): void {
   }
 
   waitForOpenAPI().then(apiReady => {
-    console.log(`[Halo] Module starting, OpenAPI ready: ${apiReady}`)
+    log.info(`[Halo] Module starting, OpenAPI ready: ${apiReady}`)
 
     const hasApi = getHasHid()
-    console.log(`[Halo] HID available: ${hasApi}`)
+    log.info(`[Halo] HID available: ${hasApi}`)
     if (hasApi) {
       const devices = findHaloDevices()
-      console.log(`[Halo] Found ${devices.length} HALO device(s)`)
+      log.info(`[Halo] Found ${devices.length} HALO device(s)`)
     }
 
     deviceConnected = communicator!.connect()
@@ -335,7 +336,7 @@ export default function registerHalo(): void {
     startModule()
   }
 
-  console.log('[Halo] Module registered')
+  log.info('[Halo] Module registered')
 }
 
 export { startModule, stopModule, HaloHidCommunicator, findHaloDevices, listDevices }
