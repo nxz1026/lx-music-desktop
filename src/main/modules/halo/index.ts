@@ -7,12 +7,17 @@
  * 通信协议: USB HID 64字节数据包
  */
 
+import * as net from 'net'
 import { HaloHidCommunicator, getHasHid, findHaloDevices, listDevices } from './haloHid'
 import { TextLayout, UIMode } from './haloPacket'
 
 const SYNC_INTERVAL_MS = 50
 const SONG_INFO_DURATION_MS = 3000
 const IDLE_TIMEOUT_MS = 30000
+const OPENAPI_PORT = 23330
+const PORT_WAIT_TIMEOUT_MS = 30000
+const HEARTBEAT_INTERVAL_MS = 30000
+const MAX_HEARTBEAT_FAILURES = 3
 
 interface LyricLine {
   timeMs: number
@@ -74,7 +79,6 @@ function getLyricAtTime(lines: LyricLine[], timeMs: number): string {
   let left = 0
   let right = lines.length - 1
   let resultIdx = 0
-
   while (left <= right) {
     const mid = (left + right) >> 1
     if (lines[mid].timeMs <= timeMs) {
@@ -84,8 +88,33 @@ function getLyricAtTime(lines: LyricLine[], timeMs: number): string {
       right = mid - 1
     }
   }
-
   return lines[resultIdx]?.text ?? ''
+}
+
+function checkPort(port: number, host: string = '127.0.0.1'): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket()
+    socket.setTimeout(2000)
+    socket.once('connect', () => { socket.destroy(); resolve(true) })
+    socket.once('error', () => { socket.destroy(); resolve(false) })
+    socket.once('timeout', () => { socket.destroy(); resolve(false) })
+    socket.connect(port, host)
+  })
+}
+
+async function waitForOpenAPI(): Promise<boolean> {
+  const start = Date.now()
+  let delay = 500
+  while (Date.now() - start < PORT_WAIT_TIMEOUT_MS) {
+    if (await checkPort(OPENAPI_PORT)) {
+      console.log(`[Halo] OpenAPI ready (port ${OPENAPI_PORT})`)
+      return true
+    }
+    await new Promise(r => setTimeout(r, delay))
+    delay = Math.min(delay * 2, 5000)
+  }
+  console.warn(`[Halo] OpenAPI port ${OPENAPI_PORT} not ready after ${PORT_WAIT_TIMEOUT_MS}ms, continuing without check`)
+  return false
 }
 
 let communicator: HaloHidCommunicator | null = null
@@ -102,6 +131,8 @@ let currentLayout: TextLayout = TextLayout.CENTER
 let maxCharsPerLine = 20
 let showProgress = false
 let lastDisplayText = ''
+let heartbeatTickCounter = 0
+let heartbeatFailures = 0
 
 function stopSyncTimer(): void {
   if (syncTimer) {
@@ -162,6 +193,24 @@ function ensureDevice(): boolean {
 function syncTick(): void {
   if (!communicator || !canSyncLyric) return
   if (!ensureDevice()) return
+
+  // Heartbeat: check OpenAPI port periodically
+  heartbeatTickCounter++
+  if (heartbeatTickCounter >= Math.ceil(HEARTBEAT_INTERVAL_MS / SYNC_INTERVAL_MS)) {
+    heartbeatTickCounter = 0
+    checkPort(OPENAPI_PORT).then(ready => {
+      if (!ready) {
+        heartbeatFailures++
+        console.warn(`[Halo] Heartbeat fail (${heartbeatFailures}/${MAX_HEARTBEAT_FAILURES})`)
+        if (heartbeatFailures >= MAX_HEARTBEAT_FAILURES) {
+          console.warn(`[Halo] OpenAPI ${OPENAPI_PORT} unreachable, stopping sync`)
+          canSyncLyric = false
+        }
+      } else {
+        heartbeatFailures = 0
+      }
+    })
+  }
 
   const status = global.lx.player_status
 
@@ -229,21 +278,27 @@ function startModule(): void {
     communicator = new HaloHidCommunicator()
   }
 
-  const hasApi = getHasHid()
-  console.log(`[Halo] Module starting, HID available: ${hasApi}`)
-  if (hasApi) {
-    const devices = findHaloDevices()
-    console.log(`[Halo] Found ${devices.length} HALO device(s)`)
-  }
+  waitForOpenAPI().then(apiReady => {
+    console.log(`[Halo] Module starting, OpenAPI ready: ${apiReady}`)
 
-  deviceConnected = communicator.connect()
-  if (deviceConnected) {
-    canSyncLyric = true
-    lastSongKey = ''
-    parsedLrcLines = []
-  }
+    const hasApi = getHasHid()
+    console.log(`[Halo] HID available: ${hasApi}`)
+    if (hasApi) {
+      const devices = findHaloDevices()
+      console.log(`[Halo] Found ${devices.length} HALO device(s)`)
+    }
 
-  startSyncTimer()
+    deviceConnected = communicator!.connect()
+    if (deviceConnected) {
+      canSyncLyric = true
+      lastSongKey = ''
+      parsedLrcLines = []
+    }
+
+    heartbeatTickCounter = 0
+    heartbeatFailures = 0
+    startSyncTimer()
+  })
 }
 
 function stopModule(): void {
