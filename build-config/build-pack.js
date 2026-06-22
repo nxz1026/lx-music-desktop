@@ -33,6 +33,7 @@ const options = {
     'node_modules/electron-font-manager/package.json',
     'node_modules/electron-font-manager/build/Release/font_manager.node',
     'node_modules/node-gyp-build',
+    'node_modules/pkg-prebuilds/**/*',
     'node_modules/node-hid/**/*',
     'node_modules/bufferutil',
     'node_modules/utf-8-validate',
@@ -40,8 +41,11 @@ const options = {
     'dist/**/*',
   ],
   asar: {
-    smartUnpack: false,
+    smartUnpack: true,
   },
+  asarUnpack: [
+    'node_modules/node-hid/**/*',
+  ],
   extraResources: [
     './licenses',
   ],
